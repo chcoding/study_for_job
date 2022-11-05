@@ -1,5 +1,17 @@
 ## Git
 
+查看具体命令的帮助文档
+
+git help <具体命令>
+
+eg: git help branch
+
+
+
+mac下oh_my_zsh下缩写git命令缩写参考
+
+https://blog.csdn.net/weixin_34315189/article/details/88971140
+
 ### 本地项目上传github
 
 > 1.首先在项目目录下初始化本地仓库
@@ -16,4 +28,27 @@
 >
 > 5.将项目推送到远程仓库
 > git push -u origin master
+
+如果出现无法连接的问题：Please make sure you have the correct access rights and the repository exists
+
+表示电脑和github的ssh连接有问题，需要在电脑产生ssh密钥，并且把公钥添加到github中。
+
+```
+//-C 注释 -t 指定密钥类型
+ssh-keygen -C 'comment' -t -rsa
+```
+
+
+
+https://blog.csdn.net/jingtingfengguo/article/details/51892864
+
+##### git rebase用法
+
+`rebase` 通常用于重写提交历史。下面的使用场景在大多数 Git 工作流中是十分常见的：
+
+- 我们从 `master` 分支拉取了一条 `feature` 分支在本地进行功能开发
+- 远程的 `master` 分支在之后又合并了一些新的提交
+- 我们想在 `feature` 分支集成 `master` 的最新更改
+
+https://waynerv.com/posts/git-rebase-intro/
 
