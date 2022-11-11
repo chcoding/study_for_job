@@ -111,6 +111,8 @@ Q：当 MAC 地址表找不到指定的 MAC 地址会怎么样？
 
 Q：输入网址到载入网页发生了什么？
 
+HTTP头、DNS解析url、TCP头、IP头、MAC、网卡、路由
+
 https://xiaolincoding.com/network/1_base/what_happen_url.html#%E5%AD%A4%E5%8D%95%E5%B0%8F%E5%BC%9F-http
 
 
