@@ -53,6 +53,15 @@
 
 
 
+##### 阻止重复的历史连接
+
+客户端连续发送多次 SYN （都是同一个四元组）建立连接的报文，在**网络拥堵**情况下：
+
+- 一个「旧 SYN 报文」比「最新的 SYN 」 报文早到达了服务端，那么此时服务端就会回一个 `SYN + ACK` 报文给客户端，此报文中的确认号是 91（90+1）。
+- 客户端收到后，发现自己期望收到的确认号应该是 100+1，而不是 90 + 1，于是就会回 RST 报文。
+- 服务端收到 RST 报文后，就会释放连接。
+- 后续最新的 SYN 抵达了服务端后，客户端与服务端就可以正常的完成三次握手了。
+
 
 
 ## 四次挥手
@@ -145,6 +154,25 @@
 
 
 
+##### TIME-WAIT 状态
+
+TIME-WAIT 的状态尤其重要，主要是两个原因：
+
+- 防止历史连接中的数据，被后面相同四元组的连接错误的接收；
+- 保证「被动关闭连接」的一方，能被正确的关闭；
+
+
+
+## 三次挥手
+
+什么情况下会出现三次挥手的情况？
+
+当被动关闭方在 TCP 挥手过程中，如果「没有数据要发送」，同时「没有开启 TCP_QUICKACK（默认情况就是没有开启，没有开启 TCP_QUICKACK，等于就是在使用 TCP 延迟确认机制）」，那么第二和第三次挥手就会合并传输，这样就出现了三次挥手。
+
+**所以，出现三次挥手现象，是因为 TCP 延迟确认机制导致的**
+
+
+
 ## TCP保活机制
 
 TCP 保活机制可以在双方没有数据交互的情况，通过探测报文，来确定对方的 TCP 连接是否存活。
@@ -218,11 +246,89 @@ TCP 保活机制可以在双方没有数据交互的情况，通过探测报文�
 
 
 
+## 什么是 TCP 半连接队列和全连接队列？
+
+在 TCP 三次握手的时候，Linux 内核会维护两个队列，分别是：
+
+- 半连接队列，也称 SYN 队列；
+- 全连接队列，也称 accept 队列；
+
+服务端收到客户端发起的 SYN 请求后，**内核会把该连接存储到半连接队列**，并向客户端响应 SYN+ACK，接着客户端会返回 ACK，服务端收到第三次握手的 ACK 后，**内核会把连接从半连接队列移除，然后创建新的完全的连接，并将其添加到 accept 队列，等待进程调用 accept 函数时把连接取出来。**
+
+![半连接队列与全连接队列](https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%BD%91%E7%BB%9C/TCP-%E5%8D%8A%E8%BF%9E%E6%8E%A5%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5/3.jpg)
+
+不管是半连接队列还是全连接队列，都有最大长度限制，超过限制时，内核会直接丢弃，或返回 RST 包。
+
+
+
+### 全连接队列
+
+##### 如何查看全连接队列大小
+
+在「LISTEN 状态」时，`Recv-Q/Send-Q` 表示的含义如下：
+
+![img](https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%BD%91%E7%BB%9C/TCP-%E5%8D%8A%E8%BF%9E%E6%8E%A5%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5/5.jpg)
+
+- Recv-Q：当前全连接队列的大小，也就是当前已完成三次握手并等待服务端 `accept()` 的 TCP 连接；
+- Send-Q：当前全连接最大队列长度，上面的输出结果说明监听 8088 端口的 TCP 服务，最大全连接长度为 128；
+
+Linux 有个参数`tcp_abort_on_overflow `可以指定当 TCP 全连接队列满了会使用什么策略来回应客户端。
+
+- 0 ：如果全连接队列满了，那么 server 扔掉 client 发过来的 ack ；
+- 1 ：如果全连接队列满了，server 发送一个 `reset` 包给 client，表示废掉这个握手过程和这个连接；
+
+
+
+##### 如何查看全连接队列是否溢出
+
+```c++
+netstat -s |grep 'overflowed'
+```
+
+
+
+##### 如何增大 TCP 全连接队列呢？
+
+**TCP 全连接队列的最大值取决于 somaxconn 和 backlog 之间的最小值，也就是 min(somaxconn, backlog)**。
+
+- `somaxconn` 是 Linux 内核的参数，默认值是 128，可以通过 `/proc/sys/net/core/somaxconn` 来设置其值；
+- `backlog` 是 `listen(int sockfd, int backlog)` 函数中的 backlog 大小，Nginx 默认值是 511，可以通过修改配置文件设置其长度；
+
+![img](https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%BD%91%E7%BB%9C/TCP-%E5%8D%8A%E8%BF%9E%E6%8E%A5%E5%92%8C%E5%85%A8%E8%BF%9E%E6%8E%A5/13.jpg)
+
+
+
+### 半连接队列
+
+##### 如何查看半连接队列大小
+
+服务端处于 `SYN_RECV` 状态的 TCP 连接，就是 TCP 半连接队列。
+
+```c++
+netstat  -ntpl |grep SYN_RECV |wc -l
+```
+
+
+
+##### 如何查看半连接队列是否溢出
+
+```c++
+netstat -s |grep 'SYNS to listen'
+```
+
+
+
+##### 如何增大半连接队列？
+
+增大半连接队列**不能只单纯增大 tcp_max_syn_backlog 的值，还需一同增大 somaxconn 和 backlog，也就是增大 accept 队列。否则，只单纯增大 tcp_max_syn_backlog 是无效的。**
+
 
 
 ## TCP可靠性保证
 
 TCP通过超时重传、滑动窗口、流量控制和拥塞控制等方法保证可靠性传输。
+
+TCP**只保证传输层的消息可靠性**，并**不保证应用层的消息可靠性**。如果我们还想保证应用层的消息可靠性，就需要应用层自己去实现逻辑做保证。
 
 
 
@@ -393,6 +499,212 @@ Linux 针对每一个 TCP 连接的 cwnd 初始化值是 10，也就是 10 个 M
 
 
 
+## TCP优化
+
+### 四次挥手
+
+调用函数有：
+
+1. `close`
+2. `shundown`
+
+区别： `shutdown` 函数是一种优雅关闭连接的方式，**它可以控制只关闭一个方向的连接**（读、写或者读写方向，通过参数控制）
+
+
+
+当进程调用了 `close` 函数关闭连接，此时连接就会是「**孤儿连接**」，因为它无法再发送和接收数据。Linux 系统为了防止孤儿连接过多，导致系统资源长时间被占用，就提供了 `tcp_max_orphans` 参数。如果孤儿连接数量大于它，新增的孤儿连接将不再走四次挥手，而是直接**发送 RST 复位报文强制关闭**。
+
+
+
+**如果连接是用 shutdown 函数关闭的，连接可以一直处于 FIN_WAIT2 状态，因为它可能还可以发送或接收数据。但对于 close 函数关闭的孤儿连接，由于无法再发送和接收数据，所以这个状态不可以持续太久，而 tcp_fin_timeout 控制了这个状态下连接的持续时长**，默认值是 60 秒：
+
+
+
+#### TIME_WAIT状态优化
+
+##### 控制TIME_WAIT状态数
+
+**Linux 提供了 tcp_max_tw_buckets 参数，当 TIME_WAIT 的连接数量超过该参数时，新关闭的连接就不再经历 TIME_WAIT 而直接关闭：**
+
+
+
+##### 复用TIME_WAIT状态的连接
+
+>  tcp_tw_reuse 参数，重用TIME_WAIT状态的连接
+>
+> tcp_tw_recycle参数，快速回收TIME_WAIT状态的连接
+
+Linux TIME_WAIT 主要有三个相关参数:
+
+- net.ipv4.tcp_tw_reuse = 1
+  - 表示开启重用。允许将TIME-WAIT sockets**重新用**于新的TCP连接，默认为0，表示关闭
+- net.ipv4.tcp_tw_recycle = 1
+  - 表示开启TCP连接中TIME-WAIT sockets的**快速回收**，默认为0，表示关闭
+- net.ipv4.tcp_fin_timeout = 60
+  - 表示如果套接字由本端要求关闭，这个参数决定了它保持在FIN-WAIT-2状态的时间（调用close关闭函数，表示不接收不发送，fin_wait2的状态室友是有时间的）
+
+
+
+两个选项都需要打开对TCP时间戳的支持，即net.ipv4.tcp_timestamps=1(默认即为1)
+
+**打开 tcp_tw_reuse 参数**，可以在建立新连接时，复用处于 TIME_WAIT 状态的连接。但是需要注意，**该参数是只用于客户端（建立连接的发起方**），因为是在调用 connect() 时起作用的，而对于服务端（被动连接方）是没有用的。
+
+
+
+老版本的 Linux 还提供了 `tcp_tw_recycle` 参数，但是当开启了它，允许处于 TIME_WAIT 状态的连接被快速回收，但是有个在**NAT环境有个大坑**。
+
+ `tcp_tw_recycle` 参数：
+
+开启了 recycle 和 timestamps 选项，就会开启一种叫 per-host 的 PAWS 机制。**per-host 是对「对端 IP 做 PAWS 检查」**，而非对「IP + 端口」四元组做 PAWS 检查。Per-host PAWS 机制利用TCP option里的 timestamp 字段的增长来判断串扰数据，而 timestamp 是根据客户端各自的 CPU tick 得出的值。
+
+若数据包时间戳的数值小于当前链接已处理数据包的时间戳，那么就认定序号发生了回绕，将消息丢弃。
+
+如果客户端网络环境是用了 NAT 网关，那么客户端环境的每一台机器通过 NAT 网关后，都会是相同的 IP 地址，在服务端看来，就好像只是在跟一个客户端打交道一样，无法区分出来。**可能会导致部分用户的报文丢失**
+
+
+
+### 如何确定最大传输速度？
+
+****
+
+带宽时延积，它决定网络中飞行报文的大小，它的计算方式：
+
+![img](https://cdn.xiaolincoding.com/gh/xiaolincoder/ImageHost/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%BD%91%E7%BB%9C/TCP-%E5%8F%82%E6%95%B0/44.jpg)
+
+比如最大带宽是 100 MB/s，网络时延（RTT）是 10ms 时，意味着客户端到服务端的网络一共可以存放 100MB/s * 0.01s = 1MB 的字节。
+
+这个 1MB 是带宽和时延的乘积，所以它就叫「带宽时延积」（缩写为 BDP，Bandwidth Delay Product）。同时，这 1MB 也表示「飞行中」的 TCP 报文大小，它们就在网络线路、路由器等网络设备上。如果飞行报文超过了 1 MB，就会导致网络过载，容易丢包。
+
+**由于发送缓冲区大小决定了发送窗口的上限，而发送窗口又决定了「已发送未确认」的飞行报文的上限。因此，发送缓冲区不能超过「带宽时延积」。**
+
+发送缓冲区与带宽时延积的关系：
+
+- 如果发送缓冲区「超过」带宽时延积，超出的部分就没办法有效的网络传输，同时导致网络过载，容易丢包；
+- 如果发送缓冲区「小于」带宽时延积，就不能很好的发挥出网络的传输效率。
+
+所以，发送缓冲区的大小最好是往带宽时延积靠近。
+
+
+
+##### 总结
+
+inux 会对缓冲区动态调节，我们应该把缓冲区的上限设置为带宽时延积。发送缓冲区的调节功能是自动打开的，而接收缓冲区需要把 tcp_moderate_rcvbuf 设置为 1 来开启。其中，调节的依据是 TCP 内存范围 tcp_mem。
+
+但需要注意的是，如果程序中的 socket 设置 SO_SNDBUF 和 SO_RCVBUF，则会关闭缓冲区的动态整功能，所以不建议在程序设置它俩，而是交给内核自动调整比较好。
+
+
+
+## QUIC
+
+QUIC 协议的特点：
+
+- **无队头阻塞**，QUIC 连接上的多个 Stream 之间并没有依赖，都是独立的，也不会有底层协议限制，某个流发生丢包了，只会影响该流，其他流不受影响；
+- **建立连接速度快**，因为 QUIC 内部包含 TLS1.3，因此仅需 1 个 RTT 就可以「同时」完成建立连接与 TLS 密钥协商，甚至在第二次连接的时候，应用数据包可以和 QUIC 握手信息（连接信息 + TLS 信息）一起发送，达到 0-RTT 的效果。
+- **连接迁移**，QUIC 协议没有用四元组的方式来“绑定”连接，而是通过「连接 ID 」来标记通信的两个端点，客户端和服务器可以各自选择一组 ID 来标记自己，因此即使移动设备的网络变化后，导致 IP 地址变化了，只要仍保有上下文信息（比如连接 ID、TLS 密钥等），就可以“无缝”地复用原连接，消除重连的成本；
+
+###  QUIC 是如何实现可靠传输的？
+
+要基于 UDP 实现的可靠传输协议，那么就要在应用层下功夫，也就是要设计好协议的头部字段。
+
+#### QUIC头
+
+![img](https://static001.geekbang.org/resource/image/ab/7c/ab3283383013b707d1420b6b4cb8517c.png)
+
+整体看的视角是这样的：
+
+![img](https://docs.citrix.com/en-us/citrix-adc/media/http3-over-quic-protocol-works.png)
+
+
+
+### Packet Header
+
+Packet Header 首次建立连接时和日常传输数据时使用的 Header 是不同的。
+
+![Packet Header](https://img-blog.csdnimg.cn/bcf3ccb6a15c4cdebe1cd0527fdd9a5e.png)
+
+Packet Header 细分这两种：
+
+- Long Packet Header 用于首次建立连接。
+- Short Packet Header 用于日常传输数据。
+
+QUIC 也是需要三次握手来建立连接的，主要目的是为了协商连接 ID。协商出连接 ID 后，后续传输时，双方只需要固定住连接 ID，从而实现连接迁移功能。
+
+Short Packet Header 中的 `Packet Number` 是每个报文独一无二的编号，它是**严格递增**的，也就是说就算 Packet N 丢失了，重传的 Packet N 的 Packet Number 已经不是 N，而是一个比 N 大的值。
+
+**QUIC 使用的 Packet Number 单调递增的设计，可以让数据包不再像 TCP 那样必须有序确认，QUIC 支持乱序确认，当数据包Packet N 丢失后，只要有新的已接收数据包确认，当前窗口就会继续向右滑动**
+
+
+
+### QUIC Frame Header
+
+一个 Packet 报文中可以存放多个 QUIC Frame。
+
+![img](https://img-blog.csdnimg.cn/6a94d41ef3d14cb6b7846e73da6c3104.png)
+
+每一个 Frame 都有明确的类型，针对类型的不同，功能也不同，自然格式也不同。
+
+我这里只举例 Stream 类型的 Frame 格式，Stream 可以认为就是一条 HTTP 请求。![img](https://img-blog.csdnimg.cn/536298d2c54a43b699026bffe0f85010.png)
+
+- Stream ID 作用：多个并发传输的 HTTP 消息，通过不同的 Stream ID 加以区别，类似于 HTTP2 的 Stream ID；
+- Offset 作用：类似于 TCP 协议中的 Seq 序号，**保证数据的顺序性和可靠性**；
+- Length 作用：指明了 Frame 数据的长度。
+
+
+
+##### 总结
+
+**QUIC 通过单向递增的 Packet Number，配合 Stream ID 与 Offset 字段信息，可以支持乱序确认而不影响数据包的正确组装**
+
+
+
+### 没有队头阻塞的 QUIC
+
+QUIC 也借鉴 HTTP/2 里的 Stream 的概念，在一条 QUIC 连接上可以并发发送多个 HTTP 请求 (Stream)。
+
+但是 **QUIC 给每一个 Stream 都分配了一个独立的滑动窗口，这样使得一个连接上的多个 Stream 之间没有依赖关系，都是相互独立的，各自控制的滑动窗口**。
+
+![img](https://cdn.xiaolincoding.com/gh/xiaolincoder/network/quic/quic%E6%97%A0%E9%98%BB%E5%A1%9E.jpeg)
+
+
+
+### QUIC 是如何做流量控制的？
+
+QUIC 实现流量控制的方式：
+
+- 通过 window_update 帧告诉对端自己可以接收的字节数，这样发送方就不会发送超过这个数量的数据。
+- 通过 BlockFrame 告诉对端由于流量控制被阻塞了，无法发送数据。
+
+**QUIC 的 每个 Stream 都有各自的滑动窗口，不同 Stream 互相独立，队头的 Stream A 被阻塞后，不妨碍 StreamB、C的读取**。但是**同一个 Stream 的数据也是要保证顺序**的，不然无法实现可靠传输，因此同一个 Stream 的数据包丢失了，也会造成窗口无法滑动.
+
+QUIC 实现了两种级别的流量控制，分别为 Stream 和 Connection 两种级别：
+
+- **Stream 级别的流量控制**：Stream 可以认为就是一条 HTTP 请求，每个 Stream 都有独立的滑动窗口，所以每个 Stream 都可以做流量控制，防止单个 Stream 消耗连接（Connection）的全部接收缓冲。
+- **Connection 流量控制**：限制连接中所有 Stream 相加起来的总字节数，防止发送方超过连接的缓冲容量
+
+
+
+### 更快的连接建立
+
+对于 HTTP/1 和 HTTP/2 协议，TCP 和 TLS 是分层的，分别属于内核实现的传输层、openssl 库实现的表示层，因此它们难以合并在一起，需要分批次来握手，先 TCP 握手，再 TLS 握手。
+
+HTTP/3 在传输数据前虽然需要 QUIC 协议握手，这个握手过程只需要 1 RTT，握手的目的是为确认双方的「连接 ID」，连接迁移就是基于连接 ID 实现的。
+
+但是 HTTP/3 的 QUIC 协议并不是与 TLS 分层，而是**QUIC 内部包含了 TLS，它在自己的帧会携带 TLS 里的“记录”，再加上 QUIC 使用的是 TLS1.3，因此仅需 1 个 RTT 就可以「同时」完成建立连接与密钥协商，甚至在第二次连接的时候，应用数据包可以和 QUIC 握手信息（连接信息 + TLS 信息）一起发送，达到 0-RTT 的效果**。
+
+
+
+### 连接迁移
+
+在前面我们提到，基于 TCP 传输协议的 HTTP 协议，由于是通过四元组（源 IP、源端口、目的 IP、目的端口）确定一条 TCP 连接。
+
+![TCP 四元组](https://imgconvert.csdnimg.cn/aHR0cHM6Ly9jZG4uanNkZWxpdnIubmV0L2doL3hpYW9saW5jb2Rlci9JbWFnZUhvc3QyLyVFOCVBRSVBMSVFNyVBRSU5NyVFNiU5QyVCQSVFNyVCRCU5MSVFNyVCQiU5Qy9UQ1AtJUU0JUI4JTg5JUU2JUFDJUExJUU2JThGJUExJUU2JTg5JThCJUU1JTkyJThDJUU1JTlCJTlCJUU2JUFDJUExJUU2JThDJUE1JUU2JTg5JThCLzEwLmpwZw?x-oss-process=image/format,png)
+
+那么当移动设备的网络从 4G 切换到 WIFI 时，意味着 IP 地址变化了，那么就必须要断开连接，然后重新建立连接，而建立连接的过程包含 TCP 三次握手和 TLS 四次握手的时延，以及 TCP 慢启动的减速过程，给用户的感觉就是网络突然卡顿了一下，因此连接的迁移成本是很高的。
+
+而 QUIC 协议没有用四元组的方式来“绑定”连接，而是通过**连接 ID**来标记通信的两个端点，客户端和服务器可以各自选择一组 ID 来标记自己，因此即使移动设备的网络变化后，导致 IP 地址变化了，只要仍保有上下文信息（比如连接 ID、TLS 密钥等），就可以“无缝”地复用原连接，消除重连的成本，没有丝毫卡顿感，达到了**连接迁移**的功能。
+
+
+
 ## 易忘点
 
 **ACK累积确认**
@@ -431,3 +743,9 @@ Linux 针对每一个 TCP 连接的 cwnd 初始化值是 10，也就是 10 个 M
 
 不一定，因为 TCP 有累计确认机制，所以当收到多个数据包时，只需要应答最后一个数据包的 ACK 报文就可以了。
 
+
+
+**Q：**SYN 报文什么时候情况下会被丢弃？
+
+- 开启 tcp_tw_recycle 参数，并且在 NAT 环境下，造成 SYN 报文被丢弃
+- TCP 两个队列满了（半连接队列和全连接队列），造成 SYN 报文被丢弃

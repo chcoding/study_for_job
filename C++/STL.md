@@ -1,5 +1,9 @@
 # STL
 
+[API总结](http://vernlium.github.io/2019/12/29/C-STL%E5%B8%B8%E7%94%A8%E5%AE%B9%E5%99%A8API%E6%80%BB%E7%BB%93/)
+
+
+
 ## 单向队列（queue）
 
 只能访问queue容器适配器的第一个和最后一个元素。只能在容器的末尾添加新元素，只能从头部移除元素。
@@ -13,8 +17,6 @@
 - size()：返回queue中元素的个数
 - empty()：如果queue中没有元素返回true。
 - emplace()：用传给emplace()的参数调用T的构造函数，在queue的尾部生成对象。
-
-
 
 
 
